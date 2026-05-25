@@ -1,0 +1,7 @@
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+cronSchedule = "0 */6 * * *"   # runs every 6 hours — adjust as needed
+restartPolicyType = "never"     # cron jobs should not auto-restart on exit
