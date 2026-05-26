@@ -420,8 +420,47 @@ def scrape_portal(page, config: dict, db: DBConn) -> int:
 
 # ── Public entry point (called by main.py) ───────────────────────────────────
 
+# Chromium launch args — no --single-process (causes signal-6 crash on context reuse)
+CHROMIUM_ARGS = [
+    "--headless=new",
+    "--no-sandbox",
+    "--disable-gpu",
+    "--disable-dev-shm-usage",
+    "--disable-extensions",
+    "--disable-setuid-sandbox",
+    "--js-flags=--max-old-space-size=256",
+]
+
+
+def _launch_browser(pw):
+    """Launch a fresh Chromium instance."""
+    log.info("Launching headless Chromium...")
+    return pw.chromium.launch(headless=True, args=CHROMIUM_ARGS)
+
+
+def _new_context(browser):
+    """Create a fresh browser context with resource blocking."""
+    context = browser.new_context(
+        viewport={"width": 1280, "height": 800},
+        java_script_enabled=True,
+    )
+    context.route(
+        "**/*",
+        lambda route: route.abort()
+        if route.request.resource_type in ("media", "font", "stylesheet")
+        else route.continue_(),
+    )
+    return context
+
+
 def run_all() -> int:
-    """Launch Chromium, scrape all NIC portals, return total records upserted."""
+    """
+    Scrape all NIC portals. Each portal gets:
+      - a fresh browser context (clears cache/cookies/JS heap)
+      - a fresh Chromium process if the previous one crashed
+
+    This means a Chromium crash on portal N never prevents portal N+1 from running.
+    """
     log.info("=== Unified NIC Scraper Starting ===")
     log.info(f"OCR_URL set:      {'YES' if LOCAL_OCR_URL else 'NO  ← CAPTCHA WILL FAIL'}")
     log.info(f"DATABASE_URL set: {'YES' if os.getenv('DATABASE_URL') else 'NO'}")
@@ -429,49 +468,51 @@ def run_all() -> int:
     grand_total = 0
 
     with sync_playwright() as pw:
-        log.info("Launching headless Chromium...")
-        browser = pw.chromium.launch(
-            headless=True,
-            args=[
-                "--headless=new",
-                "--no-sandbox",
-                "--disable-gpu",
-                "--disable-dev-shm-usage",
-                "--disable-extensions",
-                "--single-process",
-                "--js-flags=--max-old-space-size=256",
-            ],
-        )
+        browser = _launch_browser(pw)
 
         for config in PORTALS:
-            context = browser.new_context(
-                viewport={"width": 1280, "height": 800},
-                java_script_enabled=True,
-            )
-            context.route(
-                "**/*",
-                lambda route: route.abort()
-                if route.request.resource_type in ("media", "font", "stylesheet")
-                else route.continue_(),
-            )
-            page = context.new_page()
+            p = config["portal"]
 
-            db = DBConn(config["portal"])
+            # ── Relaunch Chromium if it crashed on the previous portal ────────
+            try:
+                browser.version()  # lightweight liveness probe — throws if browser is dead
+            except Exception:
+                portal_log(p, "Chromium is dead — relaunching...", "warning")
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+                browser = _launch_browser(pw)
+
+            # ── DB connection ─────────────────────────────────────────────────
+            db = DBConn(p)
             if not db.connect():
-                portal_log(config["portal"], "Skipping — no DB connection.", "error")
-                context.close()
+                portal_log(p, "Skipping — no DB connection.", "error")
                 continue
 
+            # ── Fresh context per portal ──────────────────────────────────────
+            context = None
             try:
-                count = scrape_portal(page, config, db)
+                context = _new_context(browser)
+                page    = context.new_page()
+                count   = scrape_portal(page, config, db)
                 grand_total += count
+            except Exception as e:
+                portal_log(p, f"Portal failed: {e}", "error")
             finally:
                 db.close()
-                context.close()
+                if context is not None:
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
                 gc.collect()
                 time.sleep(3)
 
-        browser.close()
+        try:
+            browser.close()
+        except Exception:
+            pass
 
     log.info(f"=== Unified NIC Done — {grand_total} total records ===")
     return grand_total
