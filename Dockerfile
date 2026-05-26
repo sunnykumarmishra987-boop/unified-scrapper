@@ -9,7 +9,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Install Playwright Chromium browser
 RUN playwright install chromium
 
-# Copy scraper
+# Copy all scrapers and orchestrator
+COPY main.py .
 COPY unified_Scrapper.py .
+COPY AP_scrapper.py .
 
-CMD ["python", "unified_Scrapper.py"]
+CMD ["python", "main.py"]
