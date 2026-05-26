@@ -418,10 +418,11 @@ def scrape_portal(page, config: dict, db: DBConn) -> int:
     return total_inserted
 
 
-# ── Entry Point ───────────────────────────────────────────────────────────────
+# ── Public entry point (called by main.py) ───────────────────────────────────
 
-if __name__ == "__main__":
-    log.info("=== Tender Scraper Starting ===")
+def run_all() -> int:
+    """Launch Chromium, scrape all NIC portals, return total records upserted."""
+    log.info("=== Unified NIC Scraper Starting ===")
     log.info(f"OCR_URL set:      {'YES' if LOCAL_OCR_URL else 'NO  ← CAPTCHA WILL FAIL'}")
     log.info(f"DATABASE_URL set: {'YES' if os.getenv('DATABASE_URL') else 'NO'}")
 
@@ -438,17 +439,15 @@ if __name__ == "__main__":
                 "--disable-dev-shm-usage",
                 "--disable-extensions",
                 "--single-process",
-                "--js-flags=--max-old-space-size=256",  # cap Chromium's V8 heap
+                "--js-flags=--max-old-space-size=256",
             ],
         )
 
         for config in PORTALS:
-            # Fresh context per portal — clears Chromium's cache, cookies, and JS heap
             context = browser.new_context(
                 viewport={"width": 1280, "height": 800},
                 java_script_enabled=True,
             )
-            # Block heavy resources; keep images for CAPTCHA
             context.route(
                 "**/*",
                 lambda route: route.abort()
@@ -457,7 +456,6 @@ if __name__ == "__main__":
             )
             page = context.new_page()
 
-            # One DB connection for the whole portal run
             db = DBConn(config["portal"])
             if not db.connect():
                 portal_log(config["portal"], "Skipping — no DB connection.", "error")
@@ -469,10 +467,20 @@ if __name__ == "__main__":
                 grand_total += count
             finally:
                 db.close()
-                context.close()  # closes page + frees Chromium context memory
+                context.close()
                 gc.collect()
                 time.sleep(3)
 
         browser.close()
 
-    log.info(f"=== ALL DONE — {grand_total} total records across all portals ===")
+    log.info(f"=== Unified NIC Done — {grand_total} total records ===")
+    return grand_total
+
+
+# ── Standalone run ────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    total = run_all()
+    if total == 0:
+        log.warning("No records upserted.")
+        sys.exit(1)
