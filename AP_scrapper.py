@@ -163,17 +163,22 @@ class APTenderScraper:
         self.session = requests.Session()
 
     def _bootstrap(self) -> bool:
-        """Hit the homepage to seed session cookies. Returns False on failure."""
+        """Hit the homepage to seed session cookies. Retries 3x with backoff."""
         log.info("[AP] Bootstrapping session...")
         self.session.headers.update({"User-Agent": random.choice(USER_AGENTS)})
-        try:
-            resp = self.session.get(HOME_URL, timeout=30)
-            log.info(f"[AP] Homepage: HTTP {resp.status_code} | cookies: {list(self.session.cookies.keys())}")
-            resp.close()
-            return True
-        except Exception as e:
-            log.error(f"[AP] Bootstrap failed: {e}")
-            return False
+        for attempt in range(1, 4):
+            try:
+                resp = self.session.get(HOME_URL, timeout=60)  # gov portals are slow
+                log.info(f"[AP] Homepage: HTTP {resp.status_code} | cookies: {list(self.session.cookies.keys())}")
+                resp.close()
+                return True
+            except Exception as e:
+                wait = 10 * attempt
+                log.warning(f"[AP] Bootstrap attempt {attempt}/3 failed: {e} — retrying in {wait}s")
+                if attempt < 3:
+                    time.sleep(wait)
+        log.error("[AP] Bootstrap failed after 3 attempts.")
+        return False
 
     def _build_params(self, start: int, length: int, echo: int) -> dict:
         return {
